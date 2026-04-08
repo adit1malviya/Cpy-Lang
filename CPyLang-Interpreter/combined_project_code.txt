@@ -1,0 +1,540 @@
+
+================================================================================
+FILE: lexer\Lexer.java
+================================================================================
+
+package lexer;
+
+import java.util.*;
+
+public class Lexer {
+
+    private String input;
+    private int pos = 0;
+
+    public Lexer(String input) {
+        super();
+        this.input = input;
+    }
+
+    private char currentChar() {
+        boolean outOfBounds = input.length() <= pos;
+        if (outOfBounds) {
+            return '\0';
+        }
+        return input.charAt(pos);
+    }
+
+    private void advance() {
+        pos += 1;
+    }
+
+    public List<Token> tokenize() {
+        List<Token> tokens = new ArrayList<>();
+
+        for (;;) {
+            char ch = currentChar();
+            
+            if (ch == '\0') {
+                break;
+            }
+
+            if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+                advance();
+                continue;
+            }
+
+            if (ch == '"') {
+                advance(); 
+
+                StringBuilder sb = new StringBuilder();
+
+                for (;;) {
+                    char next = currentChar();
+                    if (next == '"' || next == '\0') {
+                        break;
+                    }
+                    sb.append(next);
+                    advance();
+                }
+
+                advance(); 
+                tokens.add(new Token(TokenType.STRING, sb.toString()));
+                continue;
+            }
+
+            if (Character.isLetter(ch)) {
+                StringBuilder sb = new StringBuilder();
+
+                for (;;) {
+                    char c = currentChar();
+                    if (!Character.isLetterOrDigit(c)) {
+                        break;
+                    }
+                    sb.append(c);
+                    advance();
+                }
+
+                String word = sb.toString();
+
+                if ("print".equals(word)) tokens.add(new Token(TokenType.PRINT, word));
+                else if ("if".equals(word)) tokens.add(new Token(TokenType.IF, word));
+                else if ("else".equals(word)) tokens.add(new Token(TokenType.ELSE, word));
+                else if ("while".equals(word)) tokens.add(new Token(TokenType.WHILE, word));
+                else tokens.add(new Token(TokenType.IDENTIFIER, word));
+                
+                continue;
+            }
+
+            if (Character.isDigit(ch)) {
+                StringBuilder sb = new StringBuilder();
+
+                do {
+                    sb.append(currentChar());
+                    advance();
+                } while (Character.isDigit(currentChar()));
+
+                tokens.add(new Token(TokenType.NUMBER, sb.toString()));
+                continue;
+            }
+
+            if (ch == '=') {
+                advance();
+                if (currentChar() != '=') {
+                    tokens.add(new Token(TokenType.ASSIGN, "="));
+                } else {
+                    tokens.add(new Token(TokenType.EQUAL, "=="));
+                    advance();
+                }
+                continue;
+            }
+
+            if (ch == '+') { advance(); tokens.add(new Token(TokenType.PLUS, "+")); continue; }
+            if (ch == '-') { advance(); tokens.add(new Token(TokenType.MINUS, "-")); continue; }
+            if (ch == '*') { advance(); tokens.add(new Token(TokenType.MULTIPLY, "*")); continue; }
+            if (ch == '/') { advance(); tokens.add(new Token(TokenType.DIVIDE, "/")); continue; }
+
+            if (ch == '<') { advance(); tokens.add(new Token(TokenType.LESS, "<")); continue; }
+            if (ch == '>') { advance(); tokens.add(new Token(TokenType.GREATER, ">")); continue; }
+
+            if (ch == '(') { advance(); tokens.add(new Token(TokenType.LPAREN, "(")); continue; }
+            if (ch == ')') { advance(); tokens.add(new Token(TokenType.RPAREN, ")")); continue; }
+            if (ch == '{') { advance(); tokens.add(new Token(TokenType.LBRACE, "{")); continue; }
+            if (ch == '}') { advance(); tokens.add(new Token(TokenType.RBRACE, "}")); continue; }
+            if (ch == ';') { advance(); tokens.add(new Token(TokenType.SEMICOLON, ";")); continue; }
+
+            throw new RuntimeException("Invalid char: " + ch);
+        }
+
+        tokens.add(new Token(TokenType.EOF, ""));
+        return tokens;
+    }
+}
+
+================================================================================
+FILE: lexer\Token.java
+================================================================================
+
+package lexer;
+
+public class Token {
+    
+    public TokenType type;
+    public String value;
+
+    public Token(TokenType type, String value) {
+        super();
+        this.type = type;
+        this.value = value;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Token[");
+        sb.append(this.type.toString());
+        sb.append(", \"");
+        sb.append(this.value);
+        sb.append("\"]");
+        return sb.toString();
+    }
+}
+
+================================================================================
+FILE: lexer\TokenType.java
+================================================================================
+
+package lexer;
+
+public enum TokenType {
+    IDENTIFIER,
+    NUMBER,
+    STRING,
+
+    ASSIGN,
+
+    PLUS,
+    MINUS,
+    MULTIPLY,
+    DIVIDE,
+
+    GREATER,
+    LESS,
+    EQUAL,
+
+    LPAREN,
+    RPAREN,
+    LBRACE,
+    RBRACE,
+    SEMICOLON,
+
+    PRINT,
+    IF,
+    ELSE,
+    WHILE,
+
+    EOF
+}
+
+================================================================================
+FILE: main\CPyInterpreter.java
+================================================================================
+
+package main;
+
+import lexer.Lexer;
+import lexer.Token;
+import parser.Parser;
+import runtime.SymbolTable;
+import java.util.List;
+
+public class CPyInterpreter {
+
+    public void run(String code)
+    {
+        Lexer l = new Lexer(code);
+
+        List<Token> t = l.tokenize();
+
+        SymbolTable s = new SymbolTable();
+
+        Parser p = new Parser(t, s);
+
+        p.parse();
+    }
+}
+
+================================================================================
+FILE: main\Main.java
+================================================================================
+
+package main;
+
+import utils.FileLoader;
+
+public class Main {
+
+    public static void main(String[] args) {
+
+        String code = FileLoader.load("programs/program.cpy");
+
+        CPyInterpreter interpreter = new CPyInterpreter();
+        interpreter.run(code);
+    }
+}
+
+================================================================================
+FILE: parser\Parser.java
+================================================================================
+
+package parser;
+
+import lexer.*;
+import runtime.SymbolTable;
+import java.util.List;
+
+public class Parser {
+
+    private List<Token> tokenSequence;
+    private int cursor;
+    private SymbolTable variableMap;
+
+    public Parser(List<Token> tokenSequence, SymbolTable symTab) {
+        this.tokenSequence = tokenSequence;
+        this.variableMap = symTab;
+        this.cursor = 0; 
+    }
+
+    private Token activeToken() {
+        return this.tokenSequence.get(this.cursor);
+    }
+
+    private void step() {
+        this.cursor++;
+    }
+
+    public void parse() {
+        while (true) {
+            Token t = activeToken();
+            if (t.type == TokenType.EOF) {
+                break;
+            }
+            processNode();
+        }
+    }
+
+    private void processNode() {
+        TokenType kind = activeToken().type;
+
+        if (kind == TokenType.IDENTIFIER) {
+            parseAssignment();
+        } else if (kind == TokenType.PRINT) {
+            parsePrint();
+        } else if (kind == TokenType.IF) {
+            parseIfNode();
+        } else if (kind == TokenType.WHILE) {
+            parseWhileNode();
+        } else {
+            step();
+        }
+    }
+
+    private void parseAssignment() {
+        String varName = activeToken().value;
+        step(); 
+        step(); 
+
+        int exprVal = evalExpression();
+        this.variableMap.set(varName, exprVal);
+
+        step(); 
+    }
+
+    private void parsePrint() {
+        step(); 
+        step(); 
+
+        Token nextT = activeToken();
+        
+        if (nextT.type == TokenType.STRING) {
+            System.out.println(nextT.value);
+            step();
+        } else {
+            int calcResult = evalExpression();
+            System.out.println(calcResult);
+        }
+
+        step(); 
+        step(); 
+    }
+
+    private int evalExpression() {
+        int leftOperand = evalTerm();
+
+        while (true) {
+            TokenType opType = activeToken().type;
+            
+            if (opType != TokenType.PLUS && opType != TokenType.MINUS) {
+                break;
+            }
+
+            step();
+            int rightOperand = evalTerm();
+
+            if (opType == TokenType.PLUS) {
+                leftOperand += rightOperand;
+            } else {
+                leftOperand -= rightOperand;
+            }
+        }
+
+        return leftOperand;
+    }
+
+    private int evalTerm() {
+        int leftOperand = evalFactor();
+
+        while (true) {
+            TokenType opType = activeToken().type;
+            
+            if (opType == TokenType.MULTIPLY || opType == TokenType.DIVIDE) {
+                step();
+                int rightOperand = evalFactor();
+
+                if (opType == TokenType.MULTIPLY) {
+                    leftOperand *= rightOperand;
+                } else {
+                    leftOperand /= rightOperand;
+                }
+            } else {
+                break;
+            }
+        }
+
+        return leftOperand;
+    }
+
+    private int evalFactor() {
+        Token t = activeToken();
+
+        if (t.type == TokenType.IDENTIFIER) {
+            step();
+            return this.variableMap.get(t.value);
+        } else if (t.type == TokenType.NUMBER) {
+            step();
+            return Integer.parseInt(t.value);
+        }
+
+        return 0; 
+    }
+
+    private boolean checkTruthValue() {
+        int head = evalExpression();
+
+        TokenType opType = activeToken().type;
+        step();
+
+        int tail = evalExpression();
+        
+        if (opType == TokenType.LESS) {
+            return head < tail;
+        } else if (opType == TokenType.GREATER) {
+            return head > tail;
+        } else if (opType == TokenType.EQUAL) {
+            return head == tail;
+        }
+        
+        return false;
+    }
+
+    private void parseIfNode() {
+        step(); 
+        step(); 
+        
+        boolean isMet = checkTruthValue();
+        
+        step(); 
+        step(); 
+
+        if (isMet) {
+            while (activeToken().type != TokenType.RBRACE) {
+                processNode();
+            }
+        } else {
+            while (activeToken().type != TokenType.RBRACE) {
+                step();
+            }
+        }
+
+        step(); 
+
+        if (activeToken().type == TokenType.ELSE) {
+            step(); 
+            step(); 
+
+            if (!isMet) {
+                while (activeToken().type != TokenType.RBRACE) {
+                    processNode();
+                }
+            } else {
+                while (activeToken().type != TokenType.RBRACE) {
+                    step();
+                }
+            }
+
+            step(); 
+        }
+    }
+
+    private void parseWhileNode() {
+        step(); 
+        step(); 
+        
+        int condPtr = this.cursor; 
+        boolean isMet = checkTruthValue();
+
+        step(); 
+        step(); 
+
+        int bodyPtr = this.cursor; 
+
+        while (true) {
+            if (!isMet) {
+                break; 
+            }
+
+            this.cursor = bodyPtr;
+
+            while (activeToken().type != TokenType.RBRACE) {
+                processNode();
+            }
+
+            this.cursor = condPtr;
+            isMet = checkTruthValue();
+
+            step(); 
+            step(); 
+        }
+
+        while (activeToken().type != TokenType.RBRACE) {
+            step();
+        }
+        
+        step(); 
+    }
+}
+
+================================================================================
+FILE: runtime\Evaluator.java
+================================================================================
+
+
+
+================================================================================
+FILE: runtime\SymbolTable.java
+================================================================================
+
+package runtime;
+import java.util.HashMap;
+public class SymbolTable {
+    private HashMap<String, Integer> table;
+    public SymbolTable() {
+        table = new HashMap<>();
+    }
+    public void set(String name, int value) {
+        table.put(name, value);
+    }
+    public int get(String name) {
+        Integer value = table.get(name);
+        if (value == null) {
+            return 0;
+        }
+        return value;
+    }
+}
+
+================================================================================
+FILE: utils\FileLoader.java
+================================================================================
+
+package utils;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.util.Scanner;
+public class FileLoader {
+    public static String load(String path) {
+        String code = "";
+        try {
+            File file = new File(path);
+            Scanner sc = new Scanner(file);
+            while (sc.hasNextLine()) {
+                code = code + sc.nextLine() + "\n";
+            }
+            sc.close();
+        } 
+        catch (FileNotFoundException e) {
+        System.out.println("File not found");
+        }
+        return code;
+    }
+}
