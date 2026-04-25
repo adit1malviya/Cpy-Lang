@@ -1,0 +1,642 @@
+
+================================================================================
+FILE: IDEFrame.java
+================================================================================
+
+package ui;
+
+import main.CPyInterpreter;
+
+import javax.swing.*;
+import javax.swing.border.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.text.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.util.*;
+import java.util.List;
+
+public class IDEFrame extends JFrame {
+
+    // ── Colour palette ────────────────────────────────────────────────────────
+    static final Color BG_DARK        = new Color(0x1E, 0x1E, 0x1E);
+    static final Color BG_SIDEBAR     = new Color(0x25, 0x25, 0x25);
+    static final Color BG_TAB_BAR     = new Color(0x2D, 0x2D, 0x2D);
+    static final Color BG_TAB_ACTIVE  = new Color(0x1E, 0x1E, 0x1E);
+    static final Color BG_TAB_INACTIVE= new Color(0x2D, 0x2D, 0x2D);
+    static final Color BG_EDITOR      = new Color(0x1E, 0x1E, 0x1E);
+    static final Color BG_TERMINAL    = new Color(0x0C, 0x0C, 0x0C);
+    static final Color BG_TITLE       = new Color(0x32, 0x32, 0x32);
+
+    static final Color ACCENT         = new Color(0x00, 0x7A, 0xCC);
+    static final Color ACCENT_HOVER   = new Color(0x1A, 0x8A, 0xDC);
+    static final Color TEXT_PRIMARY   = new Color(0xD4, 0xD4, 0xD4);
+    static final Color TEXT_DIM       = new Color(0x85, 0x85, 0x85);
+    static final Color TEXT_WHITE     = new Color(0xFF, 0xFF, 0xFF);
+    static final Color BORDER_COLOR   = new Color(0x3C, 0x3C, 0x3C);
+    static final Color RUN_GREEN      = new Color(0x3F, 0xB9, 0x50);
+    static final Color ERROR_RED      = new Color(0xF4, 0x43, 0x36);
+    static final Color TERMINAL_GREEN = new Color(0x4E, 0xC9, 0xB0);
+    static final Color GUTTER_BG      = new Color(0x1E, 0x1E, 0x1E);
+    static final Color GUTTER_FG      = new Color(0x85, 0x85, 0x85);
+
+    // ── Fonts ─────────────────────────────────────────────────────────────────
+    static final Font FONT_CODE   = new Font("Consolas", Font.PLAIN, 14);
+    static final Font FONT_UI     = new Font("Segoe UI",  Font.PLAIN, 13);
+    static final Font FONT_UI_SM  = new Font("Segoe UI",  Font.PLAIN, 11);
+    static final Font FONT_BOLD   = new Font("Segoe UI",  Font.BOLD,  13);
+
+    // ── State ─────────────────────────────────────────────────────────────────
+    /** fileName → editor content (source of truth for unsaved files) */
+    private final LinkedHashMap<String, String> fileContents = new LinkedHashMap<>();
+    /** fileName → tab button */
+    private final Map<String, JToggleButton> tabButtons = new LinkedHashMap<>();
+
+    private String activeFile = null;
+
+    // ── Widgets ───────────────────────────────────────────────────────────────
+    private JPanel   tabBar;
+    private JTextArea editorArea;
+    private JTextPane terminalPane;
+    private JPanel   sideFileList;
+    private JLabel   statusLabel;
+    private JLabel   activeFileLabel;
+
+    // Suppress listener feedback loops
+    private boolean updatingEditor = false;
+
+    public IDEFrame() {
+        super("CPy IDE");
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setSize(1300, 800);
+        setMinimumSize(new Dimension(900, 600));
+        setLocationRelativeTo(null);
+
+        // App icon colour
+        setIconImage(createColorIcon(ACCENT, 32));
+
+        buildUI();
+    }
+
+    // =========================================================================
+    // UI CONSTRUCTION
+    // =========================================================================
+
+    private void buildUI() {
+        JPanel root = new JPanel(new BorderLayout(0, 0));
+        root.setBackground(BG_DARK);
+        setContentPane(root);
+
+        root.add(buildTitleBar(),  BorderLayout.NORTH);
+        root.add(buildCenter(),    BorderLayout.CENTER);
+        root.add(buildStatusBar(), BorderLayout.SOUTH);
+    }
+
+    // ── Title / menu bar ─────────────────────────────────────────────────────
+    private JPanel buildTitleBar() {
+        JPanel bar = new JPanel(new BorderLayout());
+        bar.setBackground(BG_TITLE);
+        bar.setPreferredSize(new Dimension(0, 40));
+        bar.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER_COLOR));
+
+        // Left: logo + name
+        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 8));
+        left.setOpaque(false);
+        JLabel logo = new JLabel("⬡ CPy IDE");
+        logo.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        logo.setForeground(ACCENT);
+        left.add(logo);
+        bar.add(left, BorderLayout.WEST);
+
+        // Right: New File + Run buttons
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 6));
+        right.setOpaque(false);
+
+        JButton newBtn = styledButton("+ New File", BG_SIDEBAR, TEXT_PRIMARY);
+        newBtn.addActionListener(e -> promptNewFile());
+
+        JButton runBtn = styledButton("▶  Run", RUN_GREEN, Color.BLACK);
+        runBtn.setFont(new Font("Segoe UI", Font.BOLD, 13));
+        runBtn.addActionListener(e -> runActiveFile());
+
+        right.add(newBtn);
+        right.add(runBtn);
+        bar.add(right, BorderLayout.EAST);
+
+        return bar;
+    }
+
+    // ── Center split (sidebar | editor | terminal) ────────────────────────────
+    private JSplitPane buildCenter() {
+        JSplitPane mainSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+                buildSidebar(), buildEditorPanel());
+        mainSplit.setDividerLocation(210);
+        mainSplit.setDividerSize(1);
+        mainSplit.setBorder(null);
+        mainSplit.setBackground(BORDER_COLOR);
+        return mainSplit;
+    }
+
+    // ── Sidebar ───────────────────────────────────────────────────────────────
+    private JPanel buildSidebar() {
+        JPanel side = new JPanel(new BorderLayout());
+        side.setBackground(BG_SIDEBAR);
+        side.setPreferredSize(new Dimension(210, 0));
+        side.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, BORDER_COLOR));
+
+        // Header
+        JPanel header = new JPanel(new BorderLayout());
+        header.setBackground(BG_SIDEBAR);
+        header.setBorder(new EmptyBorder(10, 12, 6, 8));
+        JLabel lbl = new JLabel("EXPLORER");
+        lbl.setFont(new Font("Segoe UI", Font.BOLD, 10));
+        lbl.setForeground(TEXT_DIM);
+        header.add(lbl, BorderLayout.WEST);
+
+        // File list
+        sideFileList = new JPanel();
+        sideFileList.setBackground(BG_SIDEBAR);
+        sideFileList.setLayout(new BoxLayout(sideFileList, BoxLayout.Y_AXIS));
+
+        JScrollPane scroll = new JScrollPane(sideFileList);
+        scroll.setBorder(null);
+        scroll.setBackground(BG_SIDEBAR);
+        scroll.getViewport().setBackground(BG_SIDEBAR);
+
+        side.add(header, BorderLayout.NORTH);
+        side.add(scroll,  BorderLayout.CENTER);
+        return side;
+    }
+
+    // ── Editor panel (tabs + editor + terminal) ───────────────────────────────
+    private JPanel buildEditorPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(BG_EDITOR);
+
+        // Tab bar
+        tabBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        tabBar.setBackground(BG_TAB_BAR);
+        tabBar.setPreferredSize(new Dimension(0, 36));
+        tabBar.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER_COLOR));
+        panel.add(tabBar, BorderLayout.NORTH);
+
+        // Editor + terminal vertical split
+        JSplitPane vSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+                buildEditor(), buildTerminal());
+        vSplit.setResizeWeight(0.65);
+        vSplit.setDividerSize(4);
+        vSplit.setBorder(null);
+        vSplit.setBackground(BORDER_COLOR);
+
+        panel.add(vSplit, BorderLayout.CENTER);
+        return panel;
+    }
+
+    // ── Code editor ───────────────────────────────────────────────────────────
+    private JPanel buildEditor() {
+        editorArea = new JTextArea();
+        editorArea.setFont(FONT_CODE);
+        editorArea.setBackground(BG_EDITOR);
+        editorArea.setForeground(TEXT_PRIMARY);
+        editorArea.setCaretColor(TEXT_WHITE);
+        editorArea.setSelectionColor(ACCENT.darker());
+        editorArea.setSelectedTextColor(TEXT_WHITE);
+        editorArea.setTabSize(4);
+        editorArea.setLineWrap(false);
+        editorArea.setBorder(new EmptyBorder(8, 12, 8, 8));
+
+        // Listen for edits → keep fileContents in sync
+        editorArea.getDocument().addDocumentListener(new DocumentListener() {
+            public void insertUpdate(DocumentEvent e) { syncEditorToMap(); }
+            public void removeUpdate(DocumentEvent e) { syncEditorToMap(); }
+            public void changedUpdate(DocumentEvent e) { syncEditorToMap(); }
+        });
+
+        // Line-number gutter
+        LineNumberComponent gutter = new LineNumberComponent(editorArea);
+
+        JScrollPane scroll = new JScrollPane(editorArea);
+        scroll.setBorder(null);
+        scroll.setRowHeaderView(gutter);
+        scroll.getViewport().setBackground(BG_EDITOR);
+        scroll.setBackground(BG_EDITOR);
+
+        // Placeholder panel
+        JPanel placeholder = new JPanel(new GridBagLayout());
+        placeholder.setBackground(BG_EDITOR);
+        JLabel hint = new JLabel("Click \"+ New File\" to create a file");
+        hint.setFont(new Font("Segoe UI", Font.PLAIN, 16));
+        hint.setForeground(TEXT_DIM);
+        placeholder.add(hint);
+        placeholder.setName("placeholder");
+
+        JPanel wrapper = new JPanel(new CardLayout());
+        wrapper.setName("editorWrapper");
+        wrapper.add(placeholder, "placeholder");
+        wrapper.add(scroll,      "editor");
+        return wrapper;
+    }
+
+    // ── Terminal panel ────────────────────────────────────────────────────────
+    private JPanel buildTerminal() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(BG_TERMINAL);
+        panel.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, BORDER_COLOR));
+
+        // Terminal header
+        JPanel termHeader = new JPanel(new BorderLayout());
+        termHeader.setBackground(new Color(0x1A, 0x1A, 0x1A));
+        termHeader.setBorder(new EmptyBorder(4, 12, 4, 8));
+        termHeader.setPreferredSize(new Dimension(0, 30));
+
+        JLabel termLbl = new JLabel("TERMINAL");
+        termLbl.setFont(new Font("Segoe UI", Font.BOLD, 10));
+        termLbl.setForeground(TEXT_DIM);
+        termHeader.add(termLbl, BorderLayout.WEST);
+
+        JButton clearBtn = new JButton("⊗ Clear");
+        clearBtn.setFont(FONT_UI_SM);
+        clearBtn.setForeground(TEXT_DIM);
+        clearBtn.setBackground(new Color(0x1A, 0x1A, 0x1A));
+        clearBtn.setBorder(new EmptyBorder(2, 8, 2, 8));
+        clearBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        clearBtn.setFocusPainted(false);
+        clearBtn.addActionListener(e -> terminalPane.setText(""));
+        termHeader.add(clearBtn, BorderLayout.EAST);
+
+        // Terminal text
+        terminalPane = new JTextPane();
+        terminalPane.setFont(new Font("Consolas", Font.PLAIN, 13));
+        terminalPane.setBackground(BG_TERMINAL);
+        terminalPane.setForeground(TEXT_PRIMARY);
+        terminalPane.setEditable(false);
+        terminalPane.setBorder(new EmptyBorder(8, 12, 8, 12));
+
+        JScrollPane tScroll = new JScrollPane(terminalPane);
+        tScroll.setBorder(null);
+        tScroll.getViewport().setBackground(BG_TERMINAL);
+
+        panel.add(termHeader, BorderLayout.NORTH);
+        panel.add(tScroll,    BorderLayout.CENTER);
+        return panel;
+    }
+
+    // ── Status bar ────────────────────────────────────────────────────────────
+    private JPanel buildStatusBar() {
+        JPanel bar = new JPanel(new BorderLayout());
+        bar.setBackground(ACCENT);
+        bar.setPreferredSize(new Dimension(0, 24));
+        bar.setBorder(new EmptyBorder(0, 10, 0, 10));
+
+        activeFileLabel = new JLabel("No file open");
+        activeFileLabel.setFont(FONT_UI_SM);
+        activeFileLabel.setForeground(TEXT_WHITE);
+        bar.add(activeFileLabel, BorderLayout.WEST);
+
+        statusLabel = new JLabel("CPy Language  UTF-8");
+        statusLabel.setFont(FONT_UI_SM);
+        statusLabel.setForeground(TEXT_WHITE);
+        bar.add(statusLabel, BorderLayout.EAST);
+        return bar;
+    }
+
+    // =========================================================================
+    // FILE MANAGEMENT
+    // =========================================================================
+
+    private void promptNewFile() {
+        JTextField nameField = new JTextField(20);
+        nameField.setFont(FONT_UI);
+
+        JPanel form = new JPanel(new BorderLayout(8, 8));
+        form.setBackground(BG_SIDEBAR);
+        form.add(new JLabel("File name (without extension):"), BorderLayout.NORTH);
+        form.add(nameField, BorderLayout.CENTER);
+
+        // Style the dialog
+        UIManager.put("OptionPane.background",          BG_SIDEBAR);
+        UIManager.put("Panel.background",               BG_SIDEBAR);
+        UIManager.put("OptionPane.messageForeground",   TEXT_PRIMARY);
+
+        int result = JOptionPane.showConfirmDialog(
+                this, form, "New File", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+
+        if (result != JOptionPane.OK_OPTION) return;
+
+        String raw  = nameField.getText().trim();
+        if (raw.isEmpty()) return;
+
+        // Strip .cpy if user typed it
+        String name = raw.endsWith(".cpy") ? raw : raw + ".cpy";
+
+        if (fileContents.containsKey(name)) {
+            JOptionPane.showMessageDialog(this,
+                    "A file named \"" + name + "\" already exists.",
+                    "Duplicate File", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        fileContents.put(name, "");
+        addTab(name);
+        addSidebarEntry(name);
+        switchToFile(name);
+        appendTerminal("Created: " + name + "\n", TERMINAL_GREEN, false);
+    }
+
+    private void addTab(String name) {
+        JToggleButton tab = new JToggleButton(name);
+        tab.setFont(FONT_UI_SM);
+        tab.setBackground(BG_TAB_INACTIVE);
+        tab.setForeground(TEXT_DIM);
+        tab.setBorder(new CompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 0, 1, BORDER_COLOR),
+                new EmptyBorder(6, 14, 6, 14)));
+        tab.setFocusPainted(false);
+        tab.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        tab.addActionListener(e -> switchToFile(name));
+
+        // Right-click to close
+        tab.addMouseListener(new MouseAdapter() {
+            public void mouseClicked(MouseEvent e) {
+                if (SwingUtilities.isRightMouseButton(e)) closeFile(name);
+            }
+        });
+
+        tabButtons.put(name, tab);
+        tabBar.add(tab);
+        tabBar.revalidate();
+        tabBar.repaint();
+    }
+
+    private void addSidebarEntry(String name) {
+        JPanel entry = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        entry.setBackground(BG_SIDEBAR);
+        entry.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+        entry.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        entry.setName(name);
+
+        JLabel icon = new JLabel("📄");
+        icon.setFont(FONT_UI_SM);
+
+        JLabel lbl = new JLabel(name);
+        lbl.setFont(FONT_UI_SM);
+        lbl.setForeground(TEXT_PRIMARY);
+
+        entry.add(icon);
+        entry.add(lbl);
+
+        entry.addMouseListener(new MouseAdapter() {
+            public void mouseClicked(MouseEvent e) { switchToFile(name); }
+            public void mouseEntered(MouseEvent e) { entry.setBackground(new Color(0x2F,0x2F,0x2F)); }
+            public void mouseExited(MouseEvent e)  { entry.setBackground(BG_SIDEBAR); }
+        });
+
+        sideFileList.add(entry);
+        sideFileList.revalidate();
+        sideFileList.repaint();
+    }
+
+    private void switchToFile(String name) {
+        // Save current editor content before switching
+        if (activeFile != null && fileContents.containsKey(activeFile)) {
+            fileContents.put(activeFile, editorArea.getText());
+        }
+
+        activeFile = name;
+
+        // Update tabs
+        tabButtons.forEach((n, btn) -> {
+            boolean active = n.equals(name);
+            btn.setSelected(active);
+            btn.setBackground(active ? BG_TAB_ACTIVE  : BG_TAB_INACTIVE);
+            btn.setForeground(active ? TEXT_WHITE      : TEXT_DIM);
+            if (active) {
+                btn.setBorder(new CompoundBorder(
+                        BorderFactory.createMatteBorder(2, 0, 0, 1, ACCENT),
+                        new EmptyBorder(4, 14, 6, 14)));
+            } else {
+                btn.setBorder(new CompoundBorder(
+                        BorderFactory.createMatteBorder(0, 0, 0, 1, BORDER_COLOR),
+                        new EmptyBorder(6, 14, 6, 14)));
+            }
+        });
+
+        // Load content into editor
+        updatingEditor = true;
+        editorArea.setText(fileContents.getOrDefault(name, ""));
+        editorArea.setCaretPosition(0);
+        updatingEditor = false;
+
+        // Show editor card
+        showEditorCard("editor");
+
+        // Update status bar
+        activeFileLabel.setText("  " + name);
+        editorArea.requestFocusInWindow();
+    }
+
+    private void closeFile(String name) {
+        int confirm = JOptionPane.showConfirmDialog(this,
+                "Close \"" + name + "\"?", "Close File", JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) return;
+
+        fileContents.remove(name);
+
+        // Remove tab
+        JToggleButton tab = tabButtons.remove(name);
+        if (tab != null) { tabBar.remove(tab); tabBar.revalidate(); tabBar.repaint(); }
+
+        // Remove sidebar entry
+        for (Component c : sideFileList.getComponents()) {
+            if (name.equals(c.getName())) {
+                sideFileList.remove(c);
+                sideFileList.revalidate();
+                sideFileList.repaint();
+                break;
+            }
+        }
+
+        // Switch to another file or show placeholder
+        if (name.equals(activeFile)) {
+            activeFile = null;
+            if (!fileContents.isEmpty()) {
+                switchToFile(fileContents.keySet().iterator().next());
+            } else {
+                editorArea.setText("");
+                showEditorCard("placeholder");
+                activeFileLabel.setText("No file open");
+            }
+        }
+    }
+
+    // =========================================================================
+    // RUN
+    // =========================================================================
+
+    private void runActiveFile() {
+        if (activeFile == null) {
+            appendTerminal("No file is open.\n", ERROR_RED, true);
+            return;
+        }
+        // Sync editor → map
+        fileContents.put(activeFile, editorArea.getText());
+        String code = fileContents.get(activeFile);
+
+        appendTerminal("\n▶ Running " + activeFile + " ...\n", TERMINAL_GREEN, false);
+
+        // Run in background thread so UI stays responsive
+        SwingWorker<CPyInterpreter.RunResult, Void> worker = new SwingWorker<>() {
+            protected CPyInterpreter.RunResult doInBackground() {
+                return new CPyInterpreter().run(code);
+            }
+            protected void done() {
+                try {
+                    CPyInterpreter.RunResult res = get();
+                    String out = res.output.isEmpty() ? "(no output)\n" : res.output;
+                    appendTerminal(out, res.isError ? ERROR_RED : TEXT_PRIMARY, res.isError);
+                    appendTerminal("─────────────────────────\n", TEXT_DIM, false);
+                } catch (Exception ex) {
+                    appendTerminal("Internal IDE error: " + ex.getMessage() + "\n", ERROR_RED, true);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    // =========================================================================
+    // TERMINAL HELPERS
+    // =========================================================================
+
+    private void appendTerminal(String text, Color color, boolean bold) {
+        StyledDocument doc = terminalPane.getStyledDocument();
+        Style style = terminalPane.addStyle("s" + System.nanoTime(), null);
+        StyleConstants.setForeground(style, color);
+        StyleConstants.setBold(style, bold);
+        StyleConstants.setFontFamily(style, "Consolas");
+        StyleConstants.setFontSize(style, 13);
+        try {
+            doc.insertString(doc.getLength(), text, style);
+        } catch (BadLocationException ignored) {}
+        // Auto-scroll
+        terminalPane.setCaretPosition(doc.getLength());
+    }
+
+    // =========================================================================
+    // MISC HELPERS
+    // =========================================================================
+
+    private void syncEditorToMap() {
+        if (!updatingEditor && activeFile != null) {
+            fileContents.put(activeFile, editorArea.getText());
+        }
+    }
+
+    private void showEditorCard(String card) {
+        // editorArea is inside a wrapper panel with CardLayout
+        Container wrapper = editorArea.getParent().getParent().getParent(); // scroll→viewport→scroll→panel
+        // Walk up until we find the CardLayout panel
+        Container c = editorArea.getParent();
+        while (c != null && !(c.getLayout() instanceof CardLayout)) {
+            c = c.getParent();
+        }
+        if (c != null) {
+            ((CardLayout) c.getLayout()).show(c, card);
+        }
+    }
+
+    private JButton styledButton(String text, Color bg, Color fg) {
+        JButton btn = new JButton(text);
+        btn.setFont(FONT_UI);
+        btn.setBackground(bg);
+        btn.setForeground(fg);
+        btn.setBorder(new CompoundBorder(
+                BorderFactory.createLineBorder(BORDER_COLOR, 1),
+                new EmptyBorder(4, 12, 4, 12)));
+        btn.setFocusPainted(false);
+        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        btn.addMouseListener(new MouseAdapter() {
+            public void mouseEntered(MouseEvent e) { btn.setBackground(bg.brighter()); }
+            public void mouseExited(MouseEvent e)  { btn.setBackground(bg); }
+        });
+        return btn;
+    }
+
+    private Image createColorIcon(Color c, int size) {
+        java.awt.image.BufferedImage img =
+                new java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = img.createGraphics();
+        g.setColor(c);
+        g.fillRoundRect(0, 0, size, size, 8, 8);
+        g.dispose();
+        return img;
+    }
+}
+
+================================================================================
+FILE: LineNumberComponent.java
+================================================================================
+
+package ui;
+
+import javax.swing.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.text.Element;
+import java.awt.*;
+
+/**
+ * A line-number gutter that sits to the left of a JTextArea,
+ * styled to match the dark IDE theme.
+ */
+public class LineNumberComponent extends JPanel {
+
+    private final JTextArea textArea;
+
+    private static final Color BG    = new Color(0x1E, 0x1E, 0x1E);
+    private static final Color FG    = new Color(0x85, 0x85, 0x85);
+    private static final Font  FONT  = new Font("Consolas", Font.PLAIN, 14);
+    private static final int   W     = 48;
+
+    public LineNumberComponent(JTextArea textArea) {
+        this.textArea = textArea;
+        setPreferredSize(new Dimension(W, 0));
+        setBackground(BG);
+
+        // Repaint whenever the document changes
+        textArea.getDocument().addDocumentListener(new DocumentListener() {
+            public void insertUpdate(DocumentEvent e) { repaint(); }
+            public void removeUpdate(DocumentEvent e) { repaint(); }
+            public void changedUpdate(DocumentEvent e) { repaint(); }
+        });
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+
+        Graphics2D g2 = (Graphics2D) g;
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+                            RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g2.setFont(FONT);
+        g2.setColor(FG);
+
+        // Right-align numbers, right border separator
+        g2.setColor(new Color(0x2D, 0x2D, 0x2D));
+        g2.fillRect(W - 1, 0, 1, getHeight());
+        g2.setColor(FG);
+
+        FontMetrics fm   = g2.getFontMetrics();
+        int lineHeight   = textArea.getFontMetrics(FONT).getHeight();
+        int lineCount    = textArea.getLineCount();
+        int topInset     = textArea.getInsets().top;
+
+        for (int i = 1; i <= lineCount; i++) {
+            String num  = String.valueOf(i);
+            int x       = W - fm.stringWidth(num) - 6;
+            int y       = topInset + (i - 1) * lineHeight + fm.getAscent();
+            g2.drawString(num, x, y);
+        }
+    }
+}
+
